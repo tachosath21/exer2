@@ -1,0 +1,119 @@
+/* Test programm for C */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/wait.h>
+#include <signal.h>
+#include <stdbool.h>
+#include <string.h>
+#include <semaphore.h>
+
+#define FILENAME "data.txt"
+#define NUM_THREADS 4
+#define NUM_CHARS 2000
+
+sem_t sem1, sem2;
+pthread_mutex_t mutex;
+
+void* read_file(void* arg) {
+    char* filename = (char*) arg;
+    int fd = open(filename, O_RDONLY);
+    if (fd == -1) {
+        perror("open");
+        exit(EXIT_FAILURE);
+    }
+
+    char buffer[NUM_CHARS / NUM_THREADS];
+    int num_read, total_count = 0;
+    while ((num_read = read(fd, buffer, sizeof(buffer))) > 0) {
+        int count[26] = {0};
+        for (int i = 0; i < num_read; i++) {
+            if (buffer[i] >= 'a' && buffer[i] <= 'z') {
+                count[buffer[i] - 'a']++;
+            }
+        }
+
+        pthread_mutex_lock(&mutex);
+        for (int i = 0; i < 26; i++) {
+            total_count += count[i];
+        }
+        pthread_mutex_unlock(&mutex);
+    }
+
+    close(fd);
+    return (void*) total_count;
+}
+
+void write_file() {
+    int fd = open(FILENAME, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+    if (fd == -1) {
+        perror("open");
+        exit(EXIT_FAILURE);
+    }
+
+    srand(time(NULL));
+    char buffer[NUM_CHARS];
+    for (int i = 0; i < NUM_CHARS; i++) {
+        buffer[i] = rand() % 26 + 'a';
+    }
+
+    if (write(fd, buffer, sizeof(buffer)) == -1) {
+        perror("write");
+        exit(EXIT_FAILURE);
+    }
+
+    close(fd);
+}
+
+void sig_handler(int signum) {
+    if (signum == SIGINT || signum == SIGTERM) {
+        printf("Are you sure? (y/n): ");
+        char answer[2];
+        fgets(answer, sizeof(answer), stdin);
+        if (answer[0] == 'y') {
+            exit(EXIT_SUCCESS);
+        }
+    }
+}
+
+int main() {
+    signal(SIGINT, sig_handler);
+    signal(SIGTERM, sig_handler);
+
+    sem_init(&sem1, 0, 0);
+    sem_init(&sem2, 0, 0);
+    pthread_mutex_init(&mutex, NULL);
+
+    pid_t pid = fork();
+    if (pid == -1) {
+        perror("fork");
+        exit(EXIT_FAILURE);
+    } else if (pid == 0) {
+        // child process
+        write_file();
+        sem_post(&sem1);
+        exit(EXIT_SUCCESS);
+    } else {
+        // parent process
+        sem_wait(&sem1);
+
+        pthread_t threads[NUM_THREADS];
+        for (int i = 0; i < NUM_THREADS; i++) {
+            if (pthread_create(&threads[i], NULL, read_file, FILENAME) != 0) {
+                perror("pthread_create");
+                exit(EXIT_FAILURE);
+            }
+        }
+
+        int total_count = 0;
+        for (int i = 0; i < NUM_THREADS; i++) {
+            void* result;
+            if (pthread_join(threads[i], &result) != 0) {
+                perror("pthread_join");
+                exit(EXIT_FAILURE);
+            }
+            total_count += (int) result;
+        }
